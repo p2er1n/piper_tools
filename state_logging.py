@@ -358,9 +358,8 @@ def main():
                 _save_ranges(stats)
 
             status_text = _render_status(end_pose, joint_state, gripper_state, arm_status_msg, stats, can_name)
-            sys.stdout.write("\x1b[H")
+            sys.stdout.write("\x1b[H\x1b[2J")
             sys.stdout.write(status_text)
-            sys.stdout.write("\x1b[J")
             sys.stdout.flush()
             time.sleep(REFRESH_INTERVAL_S)
     except KeyboardInterrupt:
