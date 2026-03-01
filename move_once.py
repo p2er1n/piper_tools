@@ -25,7 +25,7 @@ def parse_args():
 
     # 三个 factor
     parser.add_argument("--factor-xyz", type=float, default=1000000.0)
-    parser.add_argument("--factor-rpy", type=float, default=1000.0)
+    parser.add_argument("--factor-rpy", type=float, default=57295.7795)
     parser.add_argument("--factor-grip", type=float, default=1000000.0)
 
     parser.add_argument("--motion-speed", type=int, default=100)
