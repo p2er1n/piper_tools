@@ -17,8 +17,8 @@ def parse_args():
         "pose",
         nargs=7,
         type=float,
-        metavar=("X", "Y", "Z", "RX", "RY", "RZ", "GRIP"),
-        help="7 control parameters: X Y Z RX RY RZ GRIPPER",
+        metavar="V",
+        help="7 control parameters in order: X Y Z RX RY RZ GRIPPER",
     )
 
     parser.add_argument("--can", default="can0", help="CAN interface (default: can0)")
