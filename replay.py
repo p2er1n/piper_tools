@@ -162,6 +162,7 @@ def parse_args():
     p.add_argument("--factor-xyz", type=float, default=1000000.0, help="Scale factor for X,Y,Z (default: 1000000)")
     p.add_argument("--factor-rpy", type=float, default=57295.7795, help="Scale factor for RX,RY,RZ (default:  57295.7795)")
     p.add_argument("--factor-grip", type=float, default=1000000.0, help="Scale factor for gripper/joint_6 (default: 1000000)")
+    p.add_argument("--factor-joint", type=float, default=57295.7795, help="Scale factor for joints 0-5 in JointCtrl mode (default: 57295.7795)")
 
     p.add_argument(
         "--enable-timeout",
@@ -172,8 +173,20 @@ def parse_args():
     p.add_argument("--motion-speed", type=int, default=100, help="MotionCtrl_2 speed parameter (default: 100)")
     p.add_argument("--grip-speed", type=int, default=1000, help="GripperCtrl speed parameter (default: 1000)")
     p.add_argument("--grip-mode", type=lambda x: int(x, 0), default=0x01, help="GripperCtrl mode (default: 0x01)")
-    p.add_argument("--motion-mode", type=lambda x: int(x, 0), default=0x01, help="MotionCtrl_2 mode (default: 0x01)")
-    p.add_argument("--motion-submode", type=lambda x: int(x, 0), default=0x00, help="MotionCtrl_2 submode (default: 0x00)")
+
+    # 控制器模式选择
+    ctrl_group = p.add_mutually_exclusive_group(required=False)
+    ctrl_group.add_argument(
+        "--end-posectrl",
+        action="store_true",
+        default=True,
+        help="Use EndPoseCtrl (末端位置控制，默认)",
+    )
+    ctrl_group.add_argument(
+        "--joint-ctrl",
+        action="store_true",
+        help="Use JointCtrl (关节位置控制)",
+    )
 
     p.add_argument("--dry-run", action="store_true", help="Do not send commands; only print")
     p.add_argument("--print-every", type=int, default=50, help="Print status every N frames (default: 50)")
@@ -195,14 +208,12 @@ def connect_and_enable(can_iface: str, timeout_s: float, dry_run: bool):
     return piper
 
 
-def send_frame(
+def send_frame_endpose(
     piper,
     frame7: np.ndarray,
     factor_xyz: float,
     factor_rpy: float,
     factor_grip: float,
-    motion_mode: int,
-    motion_submode: int,
     motion_speed: int,
     grip_speed: int,
     grip_mode: int,
@@ -221,8 +232,39 @@ def send_frame(
         print(f"[DRY] EndPoseCtrl({X},{Y},{Z},{RX},{RY},{RZ})  GripperCtrl({abs(joint_6)},{grip_speed},{hex(grip_mode)},0)")
         return
 
-    piper.MotionCtrl_2(motion_mode, motion_submode, motion_speed, 0x00)
+    # 末端位置控制：ctrl_mode=0x01 (CAN指令控制), move_mode=0x00 (MOVE P - 位置模式)
+    piper.MotionCtrl_2(0x01, 0x00, motion_speed, 0x00)
     piper.EndPoseCtrl(X, Y, Z, RX, RY, RZ)
+    piper.GripperCtrl(abs(joint_6), grip_speed, grip_mode, 0)
+
+
+def send_frame_joint(
+    piper,
+    frame7: np.ndarray,
+    factor_joint: float,
+    factor_grip: float,
+    motion_speed: int,
+    grip_speed: int,
+    grip_mode: int,
+    dry_run: bool,
+):
+    # frame7: [joint_0, joint_1, joint_2, joint_3, joint_4, joint_5, joint_6]
+    # 使用 factor_joint 作为前6个关节的scale因子 (等同于示例中的 factor = 57295.7795)
+    joint_0 = int(round(frame7[0] * factor_joint))
+    joint_1 = int(round(frame7[1] * factor_joint))
+    joint_2 = int(round(frame7[2] * factor_joint))
+    joint_3 = int(round(frame7[3] * factor_joint))
+    joint_4 = int(round(frame7[4] * factor_joint))
+    joint_5 = int(round(frame7[5] * factor_joint))
+    joint_6 = int(round(frame7[6] * factor_grip))
+
+    if dry_run:
+        print(f"[DRY] JointCtrl({joint_0},{joint_1},{joint_2},{joint_3},{joint_4},{joint_5})  GripperCtrl({abs(joint_6)},{grip_speed},{hex(grip_mode)},0)")
+        return
+
+    # 关节控制模式: ctrl_mode=0x01, move_mode=0x01 (MOVE J - 关节运动)
+    piper.MotionCtrl_2(0x01, 0x01, motion_speed, 0x00)
+    piper.JointCtrl(joint_0, joint_1, joint_2, joint_3, joint_4, joint_5)
     piper.GripperCtrl(abs(joint_6), grip_speed, grip_mode, 0)
 
 
@@ -247,7 +289,8 @@ def main():
         piper.GripperCtrl(0, args.grip_speed, args.grip_mode, 0)
 
     print(f"Loaded expr: {args.key}")
-    print(f"Result shape={traj.shape}, replay [{start}:{end}) at {args.hz} Hz, loop={args.loop}, dry_run={args.dry_run}")
+    ctrl_mode = "JointCtrl" if args.joint_ctrl else "EndPoseCtrl"
+    print(f"Result shape={traj.shape}, replay [{start}:{end}) at {args.hz} Hz, mode={ctrl_mode}, loop={args.loop}, dry_run={args.dry_run}")
 
     idx = start
     frame_count = 0
@@ -257,19 +300,29 @@ def main():
             t0 = time.perf_counter()
 
             frame = traj[idx]
-            send_frame(
-                piper=piper,
-                frame7=frame,
-                factor_xyz=args.factor_xyz,
-                factor_rpy=args.factor_rpy,
-                factor_grip=args.factor_grip,
-                motion_mode=args.motion_mode,
-                motion_submode=args.motion_submode,
-                motion_speed=args.motion_speed,
-                grip_speed=args.grip_speed,
-                grip_mode=args.grip_mode,
-                dry_run=args.dry_run,
-            )
+            if args.joint_ctrl:
+                send_frame_joint(
+                    piper=piper,
+                    frame7=frame,
+                    factor_joint=args.factor_joint,
+                    factor_grip=args.factor_grip,
+                    motion_speed=args.motion_speed,
+                    grip_speed=args.grip_speed,
+                    grip_mode=args.grip_mode,
+                    dry_run=args.dry_run,
+                )
+            else:
+                send_frame_endpose(
+                    piper=piper,
+                    frame7=frame,
+                    factor_xyz=args.factor_xyz,
+                    factor_rpy=args.factor_rpy,
+                    factor_grip=args.factor_grip,
+                    motion_speed=args.motion_speed,
+                    grip_speed=args.grip_speed,
+                    grip_mode=args.grip_mode,
+                    dry_run=args.dry_run,
+                )
 
             frame_count += 1
             if args.print_every > 0 and (frame_count % args.print_every == 0):
